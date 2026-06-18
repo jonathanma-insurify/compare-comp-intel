@@ -311,8 +311,8 @@ def discover(competitor_key: str) -> tuple[list[str], str, list[str]]:
 def get_competitor_page_id(notion: Client, competitor_key: str) -> str | None:
     display_name = COMPETITOR_DISPLAY_NAMES[competitor_key]
     results = notion.databases.query(
-        database_id=NOTION_DB_ID,
-        filter={"property": "Name", "title": {"contains": display_name}},
+        **{"database_id": NOTION_DB_ID,
+           "filter": {"property": "Competitor", "title": {"contains": display_name}}}
     )
     pages = results.get("results", [])
     if not pages:
