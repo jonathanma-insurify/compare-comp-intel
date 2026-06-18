@@ -1,0 +1,37 @@
+name: Discovery — Re-run Triggered
+
+# Polls Notion every 4 hours for competitors flagged 'Re-run Needed'
+# (set by Agent 1 when it detects accumulated 404s or drift signals).
+# Runs discovery only for flagged competitors — not the full sweep.
+
+on:
+  schedule:
+    # Every 4 hours
+    - cron: "0 */4 * * *"
+  workflow_dispatch:
+
+jobs:
+  check-and-run:
+    name: Check Notion flags and re-run as needed
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r scripts/requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Poll Notion and run discovery for flagged competitors
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+        run: python scripts/check_and_trigger.py

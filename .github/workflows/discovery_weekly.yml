@@ -1,0 +1,57 @@
+name: Discovery — Weekly Sweep
+
+on:
+  schedule:
+    # Every Monday at 7:00 AM UTC
+    - cron: "0 7 * * 1"
+  # Also allows manual trigger of a full sweep from the Actions UI
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    name: Sweep all competitors
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r scripts/requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Run discovery for each competitor (sequential)
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+        run: |
+          competitors=(nerdwallet creditkarma bankrate financebuzz lendingtree bestmoney credible)
+          failed=()
+
+          for competitor in "${competitors[@]}"; do
+            echo ""
+            echo "========================================="
+            echo "  Running discovery: $competitor"
+            echo "========================================="
+            python scripts/discovery_agent.py "$competitor" || failed+=("$competitor")
+            # Brief pause between requests to avoid rate limiting
+            sleep 15
+          done
+
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo ""
+            echo "WARNING: The following competitors failed discovery:"
+            printf '  - %s\n' "${failed[@]}"
+            # Non-zero exit so the run is marked failed in Actions
+            exit 1
+          fi
+
+          echo ""
+          echo "All competitors completed successfully."

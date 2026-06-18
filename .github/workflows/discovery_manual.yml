@@ -1,0 +1,68 @@
+name: Discovery — Manual Run
+
+# Trigger a discovery run for one competitor or all of them.
+# Use this for ad-hoc re-runs outside the weekly schedule.
+
+on:
+  workflow_dispatch:
+    inputs:
+      competitor:
+        description: "Competitor to run (select 'all' for a full sweep)"
+        required: true
+        type: choice
+        options:
+          - all
+          - nerdwallet
+          - creditkarma
+          - bankrate
+          - financebuzz
+          - lendingtree
+          - bestmoney
+          - credible
+
+jobs:
+  run:
+    name: Run discovery (${{ github.event.inputs.competitor }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r scripts/requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Run discovery
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+        run: |
+          if [ "${{ github.event.inputs.competitor }}" = "all" ]; then
+            competitors=(nerdwallet creditkarma bankrate financebuzz lendingtree bestmoney credible)
+            failed=()
+
+            for competitor in "${competitors[@]}"; do
+              echo ""
+              echo "========================================="
+              echo "  Running discovery: $competitor"
+              echo "========================================="
+              python scripts/discovery_agent.py "$competitor" || failed+=("$competitor")
+              sleep 15
+            done
+
+            if [ ${#failed[@]} -gt 0 ]; then
+              echo ""
+              echo "WARNING: Failed competitors: ${failed[*]}"
+              exit 1
+            fi
+          else
+            python scripts/discovery_agent.py "${{ github.event.inputs.competitor }}"
+          fi
