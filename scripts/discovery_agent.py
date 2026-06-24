@@ -48,15 +48,34 @@ COMPETITOR_DISPLAY_NAMES = {
 
 # Priority tier 1: product category root pages (exact match)
 PRODUCT_ROOTS = [
+    # Credit
     "credit-cards",
+    # Loans
     "personal-loans",
+    "home-loans",
+    "auto-loans",
+    "student-loans",
+    "business-loans",
+    "debt-consolidation",
+    "mortgage",
+    "mortgages",
+    "loans",
+    # Insurance (specific)
     "auto-insurance",
     "car-insurance",
     "vehicle-insurance",
     "home-insurance",
     "homeowners-insurance",
     "life-insurance",
-    "loans",
+    "health-insurance",
+    "renters-insurance",
+    # Insurance (generic — e.g. LendingTree uses /insurance/)
+    "insurance",
+    # Banking / other
+    "banking",
+    "savings",
+    "checking",
+    "investing",
 ]
 
 # Priority tier 2: sub-pages one level under a known product root
@@ -85,6 +104,11 @@ EXCLUDE_PATTERNS = [
     r"\?",             # query strings
     r"#",              # fragment-only
 ]
+
+# Additional subdomains to crawl per competitor (beyond the main base URL)
+COMPETITOR_EXTRA_DOMAINS: dict[str, list[str]] = {
+    "lendingtree": ["https://creditcards.lendingtree.com"],
+}
 
 MAX_URLS = 20
 
@@ -145,15 +169,28 @@ def fetch_with_playwright(url: str) -> str | None:
         return None
 
 
-def crawl_nav_with_clicks(base_url: str) -> list[str]:
+def is_allowed_domain(netloc: str, base_netloc_bare: str, extra_base_urls: list[str]) -> bool:
+    """Return True if netloc matches the competitor's main domain or any extra subdomain."""
+    if netloc.removeprefix("www.") == base_netloc_bare:
+        return True
+    for extra_url in extra_base_urls:
+        extra_netloc = urlparse(extra_url).netloc
+        if netloc == extra_netloc:
+            return True
+    return False
+
+
+def crawl_nav_with_clicks(base_url: str, extra_base_urls: list[str] | None = None) -> list[str]:
     """
     Use Playwright to render the homepage, click each top-level nav item
     to reveal dropdowns, and collect all links that appear.
     Returns absolute URLs.
     """
+    extra_base_urls = extra_base_urls or []
     try:
         from playwright.sync_api import sync_playwright
         base_netloc = urlparse(base_url).netloc
+        base_netloc_bare = base_netloc.removeprefix("www.")
         collected: set[str] = set()
 
         with sync_playwright() as p:
@@ -172,10 +209,15 @@ def crawl_nav_with_clicks(base_url: str) -> list[str]:
                     try:
                         href = a.get_attribute("href") or ""
                         parsed = urlparse(href)
-                        if parsed.netloc and parsed.netloc != base_netloc:
+                        if parsed.netloc and not is_allowed_domain(parsed.netloc, base_netloc_bare, extra_base_urls):
                             continue
-                        path = parsed.path or "/"
-                        collected.add(base_url.rstrip("/") + "/" + path.lstrip("/"))
+                        # Preserve original netloc for subdomain URLs, use base_url otherwise
+                        if parsed.netloc and parsed.netloc != base_netloc:
+                            full = parsed.scheme + "://" + parsed.netloc + "/" + (parsed.path or "/").lstrip("/")
+                        else:
+                            path = parsed.path or "/"
+                            full = base_url.rstrip("/") + "/" + path.lstrip("/")
+                        collected.add(full)
                     except Exception:
                         pass
 
@@ -293,8 +335,9 @@ def crawl_sitemap(base_url: str) -> list[str]:
 # Nav crawl fallback
 # ---------------------------------------------------------------------------
 
-def crawl_nav(base_url: str, html: str | None = None) -> list[str]:
+def crawl_nav(base_url: str, html: str | None = None, extra_base_urls: list[str] | None = None) -> list[str]:
     """Extract href links from homepage <nav> / <header> elements."""
+    extra_base_urls = extra_base_urls or []
     if html is None:
         r = fetch(base_url)
         html = r.text if r else fetch_with_playwright(base_url)
@@ -303,14 +346,20 @@ def crawl_nav(base_url: str, html: str | None = None) -> list[str]:
 
     soup = BeautifulSoup(html, "html.parser")
     base_netloc = urlparse(base_url).netloc
+    base_netloc_bare = base_netloc.removeprefix("www.")
     paths = []
 
     for container in soup.find_all(["nav", "header"]):
         for a in container.find_all("a", href=True):
             href = a["href"].strip()
             parsed = urlparse(href)
-            # Keep same-domain or relative links only
+            # Keep same-domain, allowed subdomains, or relative links only
+            if parsed.netloc and not is_allowed_domain(parsed.netloc, base_netloc_bare, extra_base_urls):
+                continue
+            # Preserve subdomain URLs as-is; rebase relative/same-domain links
             if parsed.netloc and parsed.netloc != base_netloc:
+                path = parsed.path or "/"
+                paths.append(parsed.scheme + "://" + parsed.netloc + "/" + path.lstrip("/"))
                 continue
             path = parsed.path or "/"
             paths.append(base_url.rstrip("/") + "/" + path.lstrip("/"))
@@ -329,33 +378,40 @@ def discover(competitor_key: str) -> tuple[list[str], str, list[str]]:
         method      — 'sitemap' | 'nav' | 'playwright_nav'
         trimmed     — URLs that were cut to stay within MAX_URLS
     """
-    base_url   = COMPETITORS[competitor_key]
-    base_netloc = urlparse(base_url).netloc
+    base_url        = COMPETITORS[competitor_key]
+    extra_base_urls = COMPETITOR_EXTRA_DOMAINS.get(competitor_key, [])
+    base_netloc     = urlparse(base_url).netloc
     base_netloc_bare = base_netloc.removeprefix("www.")
     trimmed: list[str] = []
 
-    # --- Attempt 1: sitemap ---
+    # --- Attempt 1: sitemap (main domain + any extra subdomains) ---
     raw_urls = crawl_sitemap(base_url)
+    for extra_url in extra_base_urls:
+        raw_urls = list(set(raw_urls) | set(crawl_sitemap(extra_url)))
     method   = "sitemap"
 
     # --- Attempt 2: static nav crawl ---
     if not raw_urls:
         log.info(f"{competitor_key}: sitemap empty or unavailable, trying nav crawl")
-        raw_urls = crawl_nav(base_url)
+        raw_urls = crawl_nav(base_url, extra_base_urls=extra_base_urls)
+        for extra_url in extra_base_urls:
+            raw_urls = list(set(raw_urls) | set(crawl_nav(extra_url)))
         method   = "nav"
 
     # --- Attempt 3: Playwright static render ---
     if not raw_urls:
         log.info(f"{competitor_key}: nav crawl empty, trying Playwright static render")
         html     = fetch_with_playwright(base_url)
-        raw_urls = crawl_nav(base_url, html=html)
+        raw_urls = crawl_nav(base_url, html=html, extra_base_urls=extra_base_urls)
         method   = "playwright_nav"
 
     # --- Attempt 4: Playwright with nav clicks ---
     # Always run if we have fewer than 5 URLs — JS dropdowns likely hiding more
     if len(raw_urls) < 5:
         log.info(f"{competitor_key}: fewer than 5 URLs found ({len(raw_urls)}), trying Playwright click-nav")
-        click_urls = crawl_nav_with_clicks(base_url)
+        click_urls = crawl_nav_with_clicks(base_url, extra_base_urls=extra_base_urls)
+        for extra_url in extra_base_urls:
+            click_urls = list(set(click_urls) | set(crawl_nav_with_clicks(extra_url, extra_base_urls=extra_base_urls)))
         if click_urls:
             raw_urls = list(set(raw_urls) | set(click_urls))
             method   = "playwright_click_nav"
@@ -367,11 +423,15 @@ def discover(competitor_key: str) -> tuple[list[str], str, list[str]]:
 
     for url in raw_urls:
         parsed = urlparse(url)
-        # Drop external domains — normalize www. prefix before comparing
-        if parsed.netloc and parsed.netloc.removeprefix("www.") != base_netloc_bare:
+        # Drop external domains — allow main domain and any configured extra subdomains
+        if parsed.netloc and not is_allowed_domain(parsed.netloc, base_netloc_bare, extra_base_urls):
             continue
         path = parsed.path or "/"
-        full_url = base_url.rstrip("/") + "/" + path.lstrip("/")
+        # Preserve subdomain origin; rebase main-domain URLs to base_url
+        if parsed.netloc and parsed.netloc != base_netloc:
+            full_url = parsed.scheme + "://" + parsed.netloc + "/" + path.lstrip("/")
+        else:
+            full_url = base_url.rstrip("/") + "/" + path.lstrip("/")
         if full_url in seen:
             continue
         tier = classify_path(path)
