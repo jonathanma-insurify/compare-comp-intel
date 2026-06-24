@@ -441,7 +441,11 @@ def append_run_log(
     else:
         notes_lines.append(f"URLs written: {len(urls)}")
         if trimmed:
-            notes_lines.append(f"Trimmed (exceeded {MAX_URLS}): {', '.join(trimmed)}")
+            trimmed_str = f"Trimmed (exceeded {MAX_URLS}): {', '.join(trimmed)}"
+            # Truncate trimmed list if it would push entry over Notion's 2000 char limit
+            if len(trimmed_str) > 300:
+                trimmed_str = f"Trimmed (exceeded {MAX_URLS}): {len(trimmed)} URLs discarded"
+            notes_lines.append(trimmed_str)
 
     entry = (
         f"---\n"
@@ -452,6 +456,10 @@ def append_run_log(
         f"Notes: {' | '.join(notes_lines)}\n"
         f"---"
     )
+
+    # Hard cap at 1900 chars to stay safely under Notion's 2000 limit
+    if len(entry) > 1900:
+        entry = entry[:1897] + "..."
 
     notion.blocks.children.append(
         block_id=NOTION_LOG_PAGE_ID,
