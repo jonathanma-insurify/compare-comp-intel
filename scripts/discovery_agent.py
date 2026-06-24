@@ -137,6 +137,64 @@ def fetch_with_playwright(url: str) -> str | None:
         log.warning(f"Playwright fallback failed — {url}: {e}")
         return None
 
+
+def crawl_nav_with_clicks(base_url: str) -> list[str]:
+    """
+    Use Playwright to render the homepage, click each top-level nav item
+    to reveal dropdowns, and collect all links that appear.
+    Returns absolute URLs.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+        base_netloc = urlparse(base_url).netloc
+        collected: set[str] = set()
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            ctx = browser.new_context(
+                user_agent=HEADERS["User-Agent"],
+                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+                viewport={"width": 1440, "height": 900},
+            )
+            page = ctx.new_page()
+            page.goto(base_url, timeout=30_000, wait_until="domcontentloaded")
+
+            # Collect links visible before any clicks
+            def harvest_links():
+                for a in page.query_selector_all("nav a[href], header a[href]"):
+                    try:
+                        href = a.get_attribute("href") or ""
+                        parsed = urlparse(href)
+                        if parsed.netloc and parsed.netloc != base_netloc:
+                            continue
+                        path = parsed.path or "/"
+                        collected.add(base_url.rstrip("/") + "/" + path.lstrip("/"))
+                    except Exception:
+                        pass
+
+            harvest_links()
+
+            # Click each top-level nav item and harvest newly revealed links
+            nav_items = page.query_selector_all("nav > ul > li, nav > div > ul > li, header nav li")
+            log.info(f"Found {len(nav_items)} top-level nav items to click")
+
+            for item in nav_items:
+                try:
+                    item.hover()
+                    page.wait_for_timeout(300)
+                    harvest_links()
+                except Exception:
+                    pass
+
+            browser.close()
+
+        log.info(f"Playwright click-nav yielded {len(collected)} raw links")
+        return list(collected)
+
+    except Exception as e:
+        log.warning(f"Playwright click-nav failed — {base_url}: {e}")
+        return []
+
 # ---------------------------------------------------------------------------
 # URL classification & prioritization
 # ---------------------------------------------------------------------------
@@ -266,18 +324,28 @@ def discover(competitor_key: str) -> tuple[list[str], str, list[str]]:
     raw_urls = crawl_sitemap(base_url)
     method   = "sitemap"
 
-    # --- Attempt 2: nav crawl ---
+    # --- Attempt 2: static nav crawl ---
     if not raw_urls:
         log.info(f"{competitor_key}: sitemap empty or unavailable, trying nav crawl")
         raw_urls = crawl_nav(base_url)
         method   = "nav"
 
-    # --- Attempt 3: Playwright ---
+    # --- Attempt 3: Playwright static render ---
     if not raw_urls:
-        log.info(f"{competitor_key}: nav crawl empty, trying Playwright fallback")
+        log.info(f"{competitor_key}: nav crawl empty, trying Playwright static render")
         html     = fetch_with_playwright(base_url)
         raw_urls = crawl_nav(base_url, html=html)
         method   = "playwright_nav"
+
+    # --- Attempt 4: Playwright with nav clicks ---
+    # Always run if we have fewer than 5 URLs — JS dropdowns likely hiding more
+    if len(raw_urls) < 5:
+        log.info(f"{competitor_key}: fewer than 5 URLs found ({len(raw_urls)}), trying Playwright click-nav")
+        click_urls = crawl_nav_with_clicks(base_url)
+        if click_urls:
+            raw_urls = list(set(raw_urls) | set(click_urls))
+            method   = "playwright_click_nav"
+            log.info(f"{competitor_key}: click-nav added URLs, total raw: {len(raw_urls)}")
 
     # --- Classify ---
     classified: list[dict] = []
