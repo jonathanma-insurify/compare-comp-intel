@@ -331,6 +331,7 @@ def discover(competitor_key: str) -> tuple[list[str], str, list[str]]:
     """
     base_url   = COMPETITORS[competitor_key]
     base_netloc = urlparse(base_url).netloc
+    base_netloc_bare = base_netloc.removeprefix("www.")
     trimmed: list[str] = []
 
     # --- Attempt 1: sitemap ---
@@ -366,8 +367,8 @@ def discover(competitor_key: str) -> tuple[list[str], str, list[str]]:
 
     for url in raw_urls:
         parsed = urlparse(url)
-        # Drop external domains
-        if parsed.netloc and parsed.netloc != base_netloc:
+        # Drop external domains — normalize www. prefix before comparing
+        if parsed.netloc and parsed.netloc.removeprefix("www.") != base_netloc_bare:
             continue
         path = parsed.path or "/"
         full_url = base_url.rstrip("/") + "/" + path.lstrip("/")
