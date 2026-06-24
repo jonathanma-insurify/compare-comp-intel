@@ -46,22 +46,29 @@ COMPETITOR_DISPLAY_NAMES = {
     "credible":     "Credible",
 }
 
-# Priority tier 1: product category root pages
-PRODUCT_PATTERNS = [
-    r"^/credit-cards/?$",
-    r"^/personal-loans/?$",
-    r"^/auto-insurance/?$",
-    r"^/car-insurance/?$",
-    r"^/vehicle-insurance/?$",
-    r"^/home-insurance/?$",
-    r"^/homeowners-insurance/?$",
-    r"^/life-insurance/?$",
-    r"^/loans/?$",
+# Priority tier 1: product category root pages (exact match)
+PRODUCT_ROOTS = [
+    "credit-cards",
+    "personal-loans",
+    "auto-insurance",
+    "car-insurance",
+    "vehicle-insurance",
+    "home-insurance",
+    "homeowners-insurance",
+    "life-insurance",
+    "loans",
 ]
 
-# Priority tier 2: best-of pages (top-level only)
+# Priority tier 2: sub-pages one level under a known product root
+# e.g. /credit-cards/rewards/ or /personal-loans/debt-consolidation/
+PRODUCT_SUBPAGE_PATTERN = re.compile(
+    r"^/(" + "|".join(PRODUCT_ROOTS) + r")/[^/]+/?$"
+)
+
+# Priority tier 3: best-of pages at top level or one level deep
 BEST_OF_PATTERNS = [
     r"^/best-[^/]+/?$",
+    r"^/[^/]+/best-[^/]+/?$",
 ]
 
 # Always discard
@@ -210,7 +217,7 @@ def path_depth(path: str) -> int:
 def classify_path(path: str) -> str | None:
     """
     Returns priority tier or None (discard).
-    Tiers: 'homepage' > 'product' > 'best'
+    Tiers: 'homepage' > 'product' > 'subpage' > 'best'
     """
     clean = path.rstrip("/") or "/"
     if clean == "/":
@@ -219,8 +226,14 @@ def classify_path(path: str) -> str | None:
         return None
     if path_depth(clean) > 3:
         return None
-    if any(re.match(p, clean) for p in PRODUCT_PATTERNS):
+    # Exact product root: /credit-cards/, /personal-loans/, etc.
+    first_segment = clean.lstrip("/").split("/")[0]
+    if first_segment in PRODUCT_ROOTS and path_depth(clean) == 1:
         return "product"
+    # One level under a product root: /credit-cards/rewards/, etc.
+    if PRODUCT_SUBPAGE_PATTERN.match(clean):
+        return "subpage"
+    # Best-of pages: /best-credit-cards/ or /credit-cards/best-rewards/
     if any(re.match(p, clean) for p in BEST_OF_PATTERNS):
         return "best"
     return None
@@ -228,7 +241,7 @@ def classify_path(path: str) -> str | None:
 
 def prioritize_and_trim(classified: list[dict], trimmed_log: list[str]) -> list[str]:
     """Sort by priority tier, trim to MAX_URLS, record discards."""
-    tier_order = {"homepage": 0, "product": 1, "best": 2}
+    tier_order = {"homepage": 0, "product": 1, "subpage": 2, "best": 3}
     classified.sort(key=lambda x: tier_order.get(x["tier"], 99))
     kept      = classified[:MAX_URLS]
     discarded = classified[MAX_URLS:]
